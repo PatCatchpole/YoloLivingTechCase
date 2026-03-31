@@ -52,7 +52,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: .
-      Handler: src/import.handler
+      Handler: src/importData.handler
       Environment:
         Variables:
           PEOPLE_TABLE: !Ref PeopleTable
