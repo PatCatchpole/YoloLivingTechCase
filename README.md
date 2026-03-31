@@ -24,7 +24,6 @@ Após o deploy do `backend`, o output `ApiUrl` do SAM vai te dar a base:
 
 ## Apresentação
 
-Estruture a apresentação mostrando:
 1. Importação inicial (`POST /import`)
 2. Listagem filtrada por tipo (`GET /people?type=...`)
 3. CRUD via UI (criar, editar, excluir)
