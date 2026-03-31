@@ -1,0 +1,121 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: YoloLiving - People CRUD with import (Lambda + DynamoDB)
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    MemorySize: 256
+    Timeout: 30
+
+Resources:
+  PeopleTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-People'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: type
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: ByTypeCreatedAt
+          KeySchema:
+            - AttributeName: type
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  YoloApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        AllowHeaders:
+          - Content-Type
+
+  ImportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/import.handler
+      Environment:
+        Variables:
+          PEOPLE_TABLE: !Ref PeopleTable
+          YOLO_IMPORT_ENDPOINT: https://3ji5haxzr9.execute-api.us-east-1.amazonaws.com/dev/caseYolo
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PeopleTable
+      Events:
+        ImportPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref YoloApi
+            Path: /import
+            Method: POST
+
+  PeopleFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/people.handler
+      Environment:
+        Variables:
+          PEOPLE_TABLE: !Ref PeopleTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PeopleTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource: !Sub '${PeopleTable.Arn}/index/ByTypeCreatedAt'
+      Events:
+        PeopleListGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref YoloApi
+            Path: /people
+            Method: GET
+        PeopleCreatePost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref YoloApi
+            Path: /people
+            Method: POST
+        PeopleUpdatePut:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref YoloApi
+            Path: /people/{id}
+            Method: PUT
+        PeopleDeleteDelete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref YoloApi
+            Path: /people/{id}
+            Method: DELETE
+
+Outputs:
+  ApiUrl:
+    Description: Base URL for API Gateway (use this with /people and /import)
+    Value: !Sub 'https://${YoloApi}.execute-api.${AWS::Region}.amazonaws.com'
+
+  PeopleTableName:
+    Description: DynamoDB table name
+    Value: !Ref PeopleTable
+
