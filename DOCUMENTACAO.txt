@@ -340,5 +340,3 @@ Por defeito o Vite usa a porta **8080** (ver `vite.config.js`). A API deve estar
 - [Amazon DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Introduction.html)
 
 ---
-
-*Documento gerado para suportar apresentação técnica e onboarding. Ajustar outputs e URLs de exemplo aos valores reais do teu ambiente após cada deploy.*
