@@ -1,5 +1,6 @@
 const { jsonResponse, normalizeType, toIsoDate, sha256Hex } = require("./util");
 const { upsertFromYoloCliente } = require("./peopleStore");
+const { requirePeopleAdmin } = require("./auth");
 
 const YOLO_IMPORT_ENDPOINT =
   process.env.YOLO_IMPORT_ENDPOINT ||
@@ -41,6 +42,9 @@ function extractClientes(payload) {
 
 module.exports.handler = async (event) => {
   try {
+    const op = requirePeopleAdmin(event);
+    if (!op.ok) return op.response;
+
     // Sem necessidade de body, mas mantemos padrão do CRUD.
     const payload = await fetchJsonWithTimeout(YOLO_IMPORT_ENDPOINT);
     const clientes = extractClientes(payload);

@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: YoloLiving - People CRUD with import (Lambda + DynamoDB)
+Description: YoloLiving - People CRUD + Cognito JWT (Lambda + DynamoDB + HTTP API)
 
 Globals:
   Function:
@@ -9,6 +9,64 @@ Globals:
     Timeout: 30
 
 Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-users'
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub '${AWS::StackName}-web'
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders:
+        - COGNITO
+
+  GroupOperador:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: OPERADOR
+      UserPoolId: !Ref UserPool
+      Precedence: 1
+
+  GroupHospede:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: HOSPEDE
+      UserPoolId: !Ref UserPool
+      Precedence: 2
+
+  GroupProprietario:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: PROPRIETARIO
+      UserPoolId: !Ref UserPool
+      Precedence: 3
+
+  GroupFornecedor:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: FORNECEDOR
+      UserPoolId: !Ref UserPool
+      Precedence: 4
+
   PeopleTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -21,6 +79,8 @@ Resources:
           AttributeType: S
         - AttributeName: createdAt
           AttributeType: S
+        - AttributeName: emailLower
+          AttributeType: S
       KeySchema:
         - AttributeName: id
           KeyType: HASH
@@ -28,6 +88,14 @@ Resources:
         - IndexName: ByTypeCreatedAt
           KeySchema:
             - AttributeName: type
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: ByEmailLower
+          KeySchema:
+            - AttributeName: emailLower
               KeyType: HASH
             - AttributeName: createdAt
               KeyType: RANGE
@@ -45,8 +113,22 @@ Resources:
           - POST
           - PUT
           - DELETE
+          - OPTIONS
         AllowHeaders:
           - Content-Type
+          - X-Amz-Date
+          - Authorization
+          - X-Api-Key
+          - X-Yolo-Jwt
+      Auth:
+        DefaultAuthorizer: CognitoJwtAuthorizer
+        Authorizers:
+          CognitoJwtAuthorizer:
+            JwtConfiguration:
+              Issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_RNcR6fk2v"
+              Audience:
+                - "5e44dvlvnvl2o1kcmg8m1jk3th"
+            IdentitySource: "$request.header.Authorization"
 
   ImportFunction:
     Type: AWS::Serverless::Function
@@ -83,7 +165,9 @@ Resources:
             - Effect: Allow
               Action:
                 - dynamodb:Query
-              Resource: !Sub '${PeopleTable.Arn}/index/ByTypeCreatedAt'
+              Resource:
+                - !Sub '${PeopleTable.Arn}/index/ByTypeCreatedAt'
+                - !Sub '${PeopleTable.Arn}/index/ByEmailLower'
       Events:
         PeopleListGet:
           Type: HttpApi
@@ -119,3 +203,14 @@ Outputs:
     Description: DynamoDB table name
     Value: !Ref PeopleTable
 
+  UserPoolId:
+    Description: Cognito User Pool ID (frontend VITE_COGNITO_USER_POOL_ID)
+    Value: !Ref UserPool
+
+  UserPoolWebClientId:
+    Description: Cognito App Client ID without secret (frontend VITE_COGNITO_CLIENT_ID)
+    Value: !Ref UserPoolClient
+
+  AwsRegion:
+    Description: AWS Region of this stack (frontend VITE_AWS_REGION)
+    Value: !Ref AWS::Region

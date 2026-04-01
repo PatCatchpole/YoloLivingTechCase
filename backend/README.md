@@ -1,65 +1,65 @@
-# Backend - AWS SAM (Lambda + DynamoDB)
+# Backend - AWS SAM (Lambda + DynamoDB + Cognito)
 
-## Endpoints (API Gateway)
+## Autenticação (HTTP API JWT)
 
-Base URL (saída do SAM): `ApiUrl`
+Todas as rotas exigem `Authorization: Bearer <Access ou ID token>`. O frontend também envia `X-Yolo-Jwt: <jwt>` com o mesmo token, porque o **API Gateway HTTP API** por vezes **não repassa** o header `Authorization` à Lambda após o authorizer JWT — a Lambda usa `X-Yolo-Jwt` para decodificar `cognito:groups`.
 
-- `POST ${ApiUrl}/import`
-  - Importa os dados iniciais do endpoint da Yolo Tech para a tabela DynamoDB.
-  - Body: não obrigatório (pode enviar `{}`).
+O **API Gateway HTTP API** valida o JWT (issuer + audience). As Lambdas aplicam **RBAC** com base nos grupos Cognito (`cognito:groups`).
 
-- `GET ${ApiUrl}/people?type=Hospede&limit=50`
-  - Se `type` existir, usa GSI `ByTypeCreatedAt` para listar.
+### Grupos (RBAC)
 
-- `POST ${ApiUrl}/people`
-  - Body (JSON):
-    ```json
-    {
-      "name": "Fiona",
-      "phone": "+55 68 99544-3972",
-      "email": "fiona@example.com",
-      "type": "Hospede",
-      "createdAt": "2026-01-19"
-    }
-    ```
+| Grupo          | `/import` | `GET /people` | `POST/PUT/DELETE /people` |
+|----------------|-----------|-----------------|----------------------------|
+| `OPERADOR`     | sim       | lista completa (`scope: admin`) | sim |
+| `PROPRIETARIO` | sim       | lista completa (`scope: admin`) | sim |
+| `HOSPEDE`      | não       | só registos com o seu e-mail e `type = Hospede` | não |
+| `FORNECEDOR`   | não       | só registos com o seu e-mail e `type = Fornecedor` | não |
 
-- `PUT ${ApiUrl}/people/{id}`
-  - Body (opcional, só campos para alterar):
-    ```json
-    {
-      "name": "Nova Nome",
-      "type": "Operador"
-    }
-    ```
+Comparação de nomes de grupo no backend é **case-insensitive** (normalizado para maiúsculas).
 
-- `DELETE ${ApiUrl}/people/{id}`
+Utilizadores autenticados **sem** um destes grupos recebem `403`.
+
+### Cognito: criar utilizador de teste
+
+Após `sam deploy`, use os outputs `UserPoolId` e `UserPoolWebClientId`.
+
+1. No **Cognito** → User pool → **Users** → Create user (e-mail como username).
+2. **Groups** → adicione o utilizador ao grupo correspondente (`OPERADOR`, etc.).
+
+### Obter token para testar a API (exemplo)
+
+Use o fluxo Hosted UI ou o SDK; para um teste rápido com AWS CLI (InitiateAuth):
+
+```bash
+aws cognito-idp initiate-auth \
+  --client-id YOUR_CLIENT_ID \
+  --auth-flow USER_PASSWORD_AUTH \
+  --auth-parameters USERNAME=you@example.com,PASSWORD='YourPassword'
+```
+
+Use `IdToken` da resposta no header `Authorization: Bearer ...`.
+
+## Endpoints
+
+Base URL: output `ApiUrl`.
+
+- `POST ${ApiUrl}/import` — `OPERADOR` ou `PROPRIETARIO`. Importa dados da API Yolo.
+- `GET ${ApiUrl}/people?type=Hospede&limit=50` — `OPERADOR` ou `PROPRIETARIO`: lista global (`scope: admin`); `HOSPEDE` / `FORNECEDOR`: apenas “meus” dados (`scope: self`).
+- `POST/PUT/DELETE ${ApiUrl}/people` — `OPERADOR` ou `PROPRIETARIO`.
 
 ## Modelo de dados (DynamoDB)
 
-- Tabela: `People`
-  - PK: `id` (string)
-  - Atributos: `name`, `phone`, `email`, `type`, `createdAt`
-- GSI: `ByTypeCreatedAt`
-  - `type` (HASH)
-  - `createdAt` (RANGE)
+- Tabela `People`: PK `id`; atributos `name`, `phone`, `email`, `emailLower`, `type`, `createdAt`.
+- GSI `ByTypeCreatedAt`: `type` + `createdAt` (lista / filtro operador).
+- GSI `ByEmailLower`: `emailLower` + `createdAt` (dados vinculados ao e-mail do utilizador).
 
-## Deploy (AWS)
+## Deploy
 
-Pré-requisitos:
-- AWS Account com permissões para criar recursos
-- AWS SAM CLI instalado
+1. `sam build`
+2. `sam deploy --guided`
+3. Copie `ApiUrl`, `UserPoolId`, `UserPoolWebClientId`, `AwsRegion` para o `frontend/.env`.
 
-Passos:
-1. Navegue para `backend/`
-2. `sam build`
-3. `sam deploy --guided`
-4. Copie o output `ApiUrl`
-5. Configure o front-end com esse `ApiUrl` (ver `frontend/`)
+## Notas
 
-## Notas de implementação
-
-- O `POST /import` busca `GET https://3ji5haxzr9.execute-api.us-east-1.amazonaws.com/dev/caseYolo`.
-- Para cada item:
-  - `type` é normalizado para um conjunto interno: `Hospede`, `Operador`, `Fornecedor`, `Proprietario`
-  - `id` é um `sha256` determinístico (idempotente) com base nos campos do registro.
-
+- Import Yolo: `GET https://3ji5haxzr9.execute-api.us-east-1.amazonaws.com/dev/caseYolo`.
+- `emailLower` é preenchido em novos upserts/criações para suportar o GSI; registos antigos podem usar fallback em memória no primeiro acesso.

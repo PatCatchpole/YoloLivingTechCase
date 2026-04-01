@@ -1,25 +1,34 @@
-# Frontend - React (Vite)
+# Frontend - React (Vite) + Tailwind
 
-UI simples para:
-- importar dados iniciais (chama `POST /import`)
-- listar pessoas com filtro por `type`
-- criar pessoas
-- editar e excluir
+## Funcionalidades
 
-## Rodar localmente
+- Login com **Amazon Cognito** (`amazon-cognito-identity-js`).
+- Rotas protegidas: `/admin` (OPERADOR) e `/me` (hóspede / proprietário / fornecedor).
+- Painel admin: cartões, modal de criação/edição, toasts (`react-hot-toast`).
+- Paleta: branco/cinza, **rosa** (CTAs) e **azul** (secundário).
 
-1. No `frontend/`, instale dependências:
-   - `npm install`
-2. Configure o `VITE_API_BASE_URL`:
-   - Copie `frontend/.env.example` para `frontend/.env` e ajuste para o `ApiUrl` do SAM, por exemplo:
-     - `https://{api-id}.execute-api.{regiao}.amazonaws.com`
-3. Rode:
-   - `npm run dev`
+## Variáveis de ambiente
 
-## Endpoints esperados
-- `POST /import`
-- `GET /people?type=...`
-- `POST /people`
-- `PUT /people/{id}`
-- `DELETE /people/{id}`
+Copie `.env.example` para `.env` e preencha com os outputs do SAM:
 
+- `VITE_API_BASE_URL` — `ApiUrl`
+- `VITE_AWS_REGION` — `AwsRegion`
+- `VITE_COGNITO_USER_POOL_ID` — `UserPoolId`
+- `VITE_COGNITO_CLIENT_ID` — `UserPoolWebClientId`
+
+## Rodar
+
+```bash
+npm install
+npm run dev
+```
+
+O Vite está configurado na porta **8080** (veja `vite.config.js`).
+
+## Chamadas à API
+
+O `src/lib/api.js` envia `Authorization: Bearer <accessToken>` em todos os pedidos. No Cognito, o **Access Token** inclui `cognito:groups` de forma fiável; o **ID Token** pode omitir grupos, o que quebrava o RBAC no backend.
+
+O UI continua a poder usar o ID token no estado se precisar; a autorização na API usa o access token.
+
+Rotas esperadas no backend: `/import`, `/people`, `/people/{id}`.

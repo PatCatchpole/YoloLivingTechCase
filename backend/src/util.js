@@ -61,7 +61,7 @@ function requireFields(obj, fields) {
 }
 
 function buildUpdateExpression(updates) {
-  const allowed = ["name", "phone", "email", "type", "createdAt"];
+  const allowed = ["name", "phone", "email", "emailLower", "type", "createdAt"];
   const entries = Object.entries(updates).filter(([k, v]) => allowed.includes(k) && v !== undefined);
 
   if (entries.length === 0) {

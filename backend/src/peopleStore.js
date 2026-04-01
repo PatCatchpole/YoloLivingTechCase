@@ -27,11 +27,13 @@ const docClient = DynamoDBDocumentClient.from(
 
 function toPersonItem(person) {
   // Espera campos normalizados.
+  const email = person.email ?? "";
   return {
     id: person.id,
     name: person.name,
     phone: person.phone,
-    email: person.email,
+    email,
+    emailLower: (person.emailLower ?? email).toString().trim().toLowerCase(),
     type: person.type,
     createdAt: person.createdAt,
   };
@@ -113,6 +115,39 @@ async function listPeople({ type, limit }) {
   return res.Items ?? [];
 }
 
+/**
+ * Registros vinculados ao utilizador autenticado (email normalizado).
+ * Usa GSI `ByEmailLower` quando disponível; fallback a scan em datasets pequenos.
+ */
+async function listPeopleByEmailLower(emailLower, { limit } = {}) {
+  const el = (emailLower ?? "").toString().trim().toLowerCase();
+  const safeLimit = Math.max(1, Math.min(500, Number(limit ?? 100)));
+
+  const queryRes = await docClient.send(
+    new QueryCommand({
+      TableName: TABLE,
+      IndexName: "ByEmailLower",
+      KeyConditionExpression: "#el = :el",
+      ExpressionAttributeNames: { "#el": "emailLower" },
+      ExpressionAttributeValues: { ":el": el },
+      ScanIndexForward: false,
+      Limit: safeLimit,
+    })
+  );
+
+  let items = queryRes.Items ?? [];
+  if (items.length > 0) return items;
+
+  const scanRes = await docClient.send(
+    new ScanCommand({
+      TableName: TABLE,
+      Limit: safeLimit,
+    })
+  );
+  const scanned = scanRes.Items ?? [];
+  return scanned.filter((i) => (i.emailLower || i.email || "").toString().trim().toLowerCase() === el);
+}
+
 async function upsertFromYoloCliente(cliente, converters) {
   const {
     normalizeType,
@@ -137,6 +172,7 @@ module.exports = {
   updatePerson,
   deletePerson,
   listPeople,
+  listPeopleByEmailLower,
   upsertFromYoloCliente,
   TABLE,
   jsonResponse,

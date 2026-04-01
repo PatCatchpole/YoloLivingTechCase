@@ -1,0 +1,344 @@
+# YoloLiving — Documentação técnica
+
+Este documento descreve de forma coesa o **case Yolo Tech**: plataforma de apoio à gestão de pessoas num contexto de **coliving**, com **CRUD**, **importação de dados externos**, **autenticação** e **controlo de acessos (RBAC)** na AWS.
+
+---
+
+## 1. Contexto de negócio: coliving
+
+**Coliving** é um modelo de habitação em que várias pessoas partilham espaços e, muitas vezes, valores (comunidade, sustentabilidade, economia colaborativa). Na prática, uma operadora precisa de:
+
+- Registar e manter dados de **hóspedes**, **proprietários**, **operadores** e **fornecedores**;
+- Permitir que **operadores** gerem o cadastro de forma centralizada;
+- Restringir o que cada tipo de perfil pode **ver** ou **alterar**.
+
+Este projeto implementa a camada técnica mínima para demonstrar esse cenário: **API segura**, **base de dados na cloud** e **interface web** alinhada com a identidade visual pedida.
+
+---
+
+## 2. Objetivos do case (requisitos)
+
+| Objetivo | Implementação |
+|----------|----------------|
+| Hospedar código no **GitHub** com Git | Repositório versionado |
+| Arquitetura **microsserviços** na AWS | Lambdas com responsabilidades separadas (pessoas vs importação) |
+| **DynamoDB** (ou RDS) para pessoas | Tabela `People` + índices secundários |
+| **Integração REST** para importar dados iniciais | `POST /import` consome API externa Yolo |
+| **CRUD** + filtro por tipo | `GET/POST/PUT/DELETE /people` + query `type` |
+| **Documentação** | Este ficheiro + READMEs por pasta |
+
+---
+
+## 3. Arquitetura lógica
+
+```mermaid
+flowchart LR
+  subgraph Cliente
+    Browser[Browser React]
+  end
+  subgraph AWS
+    APIGW[API Gateway HTTP API]
+    JWT[JWT Authorizer Cognito]
+    L1[Lambda People]
+    L2[Lambda Import]
+    DDB[(DynamoDB People)]
+    CGN[Cognito User Pool]
+  end
+  subgraph Externo
+    YoloAPI[API Yolo caseYolo]
+  end
+
+  Browser -->|HTTPS JWT| APIGW
+  APIGW --> JWT
+  JWT --> L1
+  JWT --> L2
+  L1 --> DDB
+  L2 --> DDB
+  L2 -->|GET JSON| YoloAPI
+  Browser --> CGN
+```
+
+- **Dois microsserviços** em Lambda: um para **CRUD de pessoas**, outro para **importação** (orquestração + escrita em massa na mesma tabela).
+- **Um único HTTP API** expõe rotas; o **autorizador JWT** valida tokens emitidos pelo **Cognito** antes de invocar as funções.
+
+---
+
+## 4. Stack tecnológica
+
+| Camada | Tecnologia |
+|--------|------------|
+| Frontend | React 19, Vite 8, Tailwind CSS 3, React Router, `amazon-cognito-identity-js`, `react-hot-toast` |
+| Backend | Node.js 20 (AWS Lambda), AWS SAM |
+| API | Amazon API Gateway **HTTP API** |
+| Auth | Amazon Cognito User Pools + grupos |
+| Dados | Amazon DynamoDB (modo on-demand) |
+| IaC | `template.yaml` (AWS SAM) |
+| Versionamento | Git / GitHub |
+
+---
+
+## 5. Estrutura do repositório
+
+```
+YoloLiving/
+├── backend/
+│   ├── src/
+│   │   ├── auth.js          # RBAC, parsing de grupos, JWT (claims + header X-Yolo-Jwt)
+│   │   ├── people.js        # Handler HTTP: CRUD /people
+│   │   ├── importData.js    # Handler HTTP: POST /import
+│   │   ├── peopleStore.js   # Acesso DynamoDB (Query/Scan/Put/Update/Delete)
+│   │   └── util.js          # Helpers (JSON, datas, hash, update expression)
+│   ├── template.yaml        # Recursos AWS (Cognito, HttpApi, Lambdas, DynamoDB)
+│   ├── package.json
+│   └── README.md
+├── frontend/
+│   ├── src/
+│   │   ├── context/AuthContext.jsx
+│   │   ├── lib/api.js       # fetch + Authorization + X-Yolo-Jwt
+│   │   ├── lib/cognitoAuth.js
+│   │   ├── pages/           # Login, AdminPanel, MyArea
+│   │   └── ...
+│   ├── index.html
+│   ├── vite.config.js
+│   └── README.md
+├── README.md
+└── DOCUMENTACAO.md          # Este ficheiro
+```
+
+---
+
+## 6. Recursos AWS (SAM)
+
+O ficheiro `backend/template.yaml` define, entre outros:
+
+| Recurso | Descrição |
+|---------|-----------|
+| `UserPool` | Pool de utilizadores Cognito (login por e-mail) |
+| `UserPoolClient` | Cliente público (sem secret) para SPA |
+| `GroupOperador`, `GroupHospede`, `GroupProprietario`, `GroupFornecedor` | Grupos de RBAC |
+| `PeopleTable` | Tabela DynamoDB com dois GSI |
+| `YoloApi` | HTTP API com CORS e autorizador JWT |
+| `PeopleFunction` | Lambda ligada a `GET/POST /people`, `PUT/DELETE /people/{id}` |
+| `ImportFunction` | Lambda ligada a `POST /import` |
+
+**Outputs úteis após `sam deploy`:** `ApiUrl`, `PeopleTableName`, `UserPoolId`, `UserPoolWebClientId`, `AwsRegion` (nomes podem variar ligeiramente conforme o template; confirmar no CloudFormation).
+
+---
+
+## 7. Modelo de dados (DynamoDB)
+
+### Chave primária
+
+| Atributo | Papel |
+|----------|--------|
+| `id` (HASH) | Identificador único da pessoa (hash SHA-256 determinístico a partir de campos do registo, para importações idempotentes) |
+
+### Atributos principais
+
+| Campo | Descrição |
+|-------|-----------|
+| `name` | Nome |
+| `phone` | Telefone |
+| `email` | E-mail (como recebido / exibido) |
+| `emailLower` | E-mail normalizado em minúsculas (para consultas por utilizador) |
+| `type` | Tipo normalizado: `Hospede`, `Operador`, `Fornecedor`, `Proprietario`, etc. |
+| `createdAt` | Data/hora ISO |
+
+### Índices secundários globais (GSI)
+
+| Nome | Partition key | Sort key | Uso |
+|------|---------------|----------|-----|
+| `ByTypeCreatedAt` | `type` | `createdAt` | Listagem e filtro por tipo (painel admin) |
+| `ByEmailLower` | `emailLower` | `createdAt` | Registos associados ao e-mail do utilizador (vista “self”) |
+
+**Modo de faturação:** `PAY_PER_REQUEST` (on-demand), adequado a cargas variáveis e demonstrações.
+
+---
+
+## 8. API REST
+
+**Base URL:** valor de `ApiUrl` após o deploy (ex.: `https://xxxx.execute-api.us-east-1.amazonaws.com`).
+
+Todas as rotas exigem autenticação. O cliente envia:
+
+- `Authorization: Bearer <access_token>`
+- `X-Yolo-Jwt: <access_token>` (mesmo JWT, sem prefixo no valor)
+
+### Por que o header `X-Yolo-Jwt`?
+
+O **API Gateway HTTP API** com autorizador JWT valida o `Authorization`, mas **em alguns cenários o header `Authorization` não é reposto integralmente no evento enviado à Lambda**. Sem o token em claro, o backend não consegue decodificar o payload para ler `cognito:groups`. O header **`X-Yolo-Jwt`** duplica o JWT para a Lambda poder aplicar RBAC de forma fiável. O CORS do API Gateway foi configurado para permitir esse header.
+
+### Endpoints
+
+| Método | Caminho | Descrição |
+|--------|---------|-----------|
+| `POST` | `/import` | Obtém dados da API externa Yolo e faz upsert na tabela `People` |
+| `GET` | `/people` | Lista pessoas; query opcional: `type`, `limit` |
+| `POST` | `/people` | Cria pessoa |
+| `PUT` | `/people/{id}` | Atualiza pessoa |
+| `DELETE` | `/people/{id}` | Remove pessoa |
+
+### API externa (importação)
+
+- **URL:** `GET https://3ji5haxzr9.execute-api.us-east-1.amazonaws.com/dev/caseYolo`
+- O payload inclui `clientes[]` com campos `Nome`, `Telefone`, `E-mail`, `Tipo`, `Data de Cadastro` (normalizados no backend).
+
+---
+
+## 9. Autenticação e RBAC (Cognito)
+
+### Grupos
+
+Os grupos Cognito são mapeados para regras na Lambda (comparação **case-insensitive**):
+
+| Grupo | `/import` | `GET /people` | `POST` / `PUT` / `DELETE` |
+|-------|-----------|----------------|----------------------------|
+| `OPERADOR` | Sim | Lista completa (`scope: admin`) | Sim |
+| `PROPRIETARIO` | Sim | Lista completa (`scope: admin`) | Sim |
+| `HOSPEDE` | Não | Apenas registos do próprio e-mail e `type = Hospede` | Não |
+| `FORNECEDOR` | Não | Apenas registos do próprio e-mail e `type = Fornecedor` | Não |
+
+Utilizadores sem qualquer um destes grupos recebem **403** nas rotas aplicáveis.
+
+### Token utilizado no frontend
+
+A aplicação envia o **Access Token** no `Authorization` para chamadas à API. No Cognito, **`cognito:groups` costuma estar presente no Access Token** de forma consistente; o ID Token pode omitir grupos em certas configurações, o que quebrava o RBAC apenas com ID Token.
+
+### Fluxo resumido
+
+1. Utilizador faz login (SRP / password) via `amazon-cognito-identity-js`.
+2. A sessão guarda `accessToken` e `idToken` (o estado de grupos na UI prefere derivar do access token).
+3. Cada `fetch` à API inclui `Authorization` e `X-Yolo-Jwt`.
+4. O API Gateway valida o JWT; a Lambda lê claims e/ou decodifica o JWT para extrair grupos e e-mail/username.
+
+---
+
+## 10. Frontend
+
+### Rotas principais
+
+| Rota | Função |
+|------|--------|
+| `/login` | Autenticação |
+| `/admin` | Painel administrativo (CRUD, import, filtros) — perfis com `canUseAdminPanel` |
+| `/me` | Área do utilizador com leitura limitada (hóspede / fornecedor / etc.) |
+| `/` | Redireciona consoante sessão e perfil |
+
+### Identidade visual
+
+- Fundos claros (branco/cinza), **rosa** para ações primárias, **azul** para elementos secundários e navegação.
+- Componentes com Tailwind; feedback com toasts.
+
+### Ficheiros-chave
+
+- `src/lib/api.js` — cliente HTTP e headers de autenticação.
+- `src/lib/cognitoAuth.js` — pool Cognito, login, parsing de grupos a partir de JWT.
+- `src/context/AuthContext.jsx` — estado de sessão e injeção do token na camada HTTP.
+
+---
+
+## 11. Variáveis de ambiente (frontend)
+
+Criar `frontend/.env` a partir de `frontend/.env.example`:
+
+| Variável | Origem |
+|----------|--------|
+| `VITE_API_BASE_URL` | Output `ApiUrl` do SAM |
+| `VITE_AWS_REGION` | Região do stack (ex.: `us-east-1`) |
+| `VITE_COGNITO_USER_POOL_ID` | Output `UserPoolId` |
+| `VITE_COGNITO_CLIENT_ID` | Output `UserPoolWebClientId` |
+
+---
+
+## 12. Deploy e operações
+
+### Backend
+
+```bash
+cd backend
+sam build
+sam deploy --guided
+```
+
+Guardar os outputs para configurar o frontend e para criar utilizadores no Cognito.
+
+### Frontend (produção estática)
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+Publicar o conteúdo de `frontend/dist` no serviço de hosting escolhido (S3+CloudFront, Netlify, Vercel, etc.), com as variáveis de ambiente de build adequadas.
+
+### Desenvolvimento local (frontend)
+
+```bash
+cd frontend
+npm run dev
+```
+
+Por defeito o Vite usa a porta **8080** (ver `vite.config.js`). A API deve estar acessível e o CORS do API Gateway deve permitir a origem do dev server (em muitos setups usa-se `AllowOrigins: '*'` durante desenvolvimento).
+
+---
+
+## 13. Criação de utilizadores e grupos (Cognito)
+
+1. No **Cognito** → User pool → **Users** → criar utilizador (e-mail como identificador, conforme configuração do pool).
+2. Definir palavra-passe temporária ou fluxo de primeiro login, conforme política.
+3. Em **Groups**, associar o utilizador a um ou mais grupos (`OPERADOR`, `PROPRIETARIO`, etc.).
+4. **Importante:** após alterar associação a grupos, pode ser necessário **novo login** (ou refresh de sessão) para o token refletir `cognito:groups`.
+
+---
+
+## 14. Testes manuais sugeridos (checklist de demo)
+
+1. Login com perfil **admin** (`OPERADOR` ou `PROPRIETARIO`).
+2. **Importar dados** (`POST /import` pela UI).
+3. **Listar** e **filtrar por tipo**.
+4. **Criar**, **editar** e **eliminar** uma pessoa.
+5. Login com perfil **HOSPEDE** ou **FORNECEDOR** e confirmar que só vê dados **self** (e sem escrita).
+6. Verificar mensagens de erro esperadas ao tentar operações não permitidas (403).
+
+---
+
+## 15. Resolução de problemas (troubleshooting)
+
+| Sintoma | Causa provável | Ação |
+|---------|----------------|------|
+| 403 “sem grupo” / “só OPERADOR ou PROPRIETARIO” com grupos corretos no Cognito | Grupos não presentes no token usado pela API ou claims não chegavam à Lambda | Garantir **Access Token** na API; confirmar header **`X-Yolo-Jwt`** após deploy CORS |
+| Lista vazia após import | Filtro de tipo incompatível ou dados noutro e-mail | Verificar `type` normalizado e e-mail do utilizador |
+| CORS no browser | Origem não permitida ou header não listado | Confirmar `AllowOrigins` / `AllowHeaders` no `template.yaml` e redeploy |
+| Erro `global is not defined` (Vite) | Polyfill Node no browser | Ver `vite.config.js` (`define.global`) e script em `index.html` |
+
+---
+
+## 16. Segurança e limitações conhecidas
+
+- Tokens JWT são credenciais sensíveis: não registar tokens completos em logs de produção.
+- O header `X-Yolo-Jwt` duplica o token; deve ser usado apenas sobre **HTTPS**.
+- O case foca funcionalidade e clareza; **produção** exigiria endurecimento adicional (rate limiting, WAF, auditoria, rotação de chaves, testes automatizados, pipelines CI/CD).
+
+---
+
+## 17. Melhorias futuras (roadmap sugerido)
+
+- Testes automatizados (unitários nas Lambdas, e2e no frontend).
+- CI/CD (GitHub Actions) para `sam deploy` e publicação do frontend.
+- Observabilidade: métricas e logs estruturados (correlação por `requestId`).
+- Paginação na listagem (`LastEvaluatedKey`) para tabelas grandes.
+- Refresh automático de tokens e tratamento de 401 unificado.
+
+---
+
+## 18. Referências
+
+- [AWS SAM](https://docs.aws.amazon.com/serverless-application-model/)
+- [Amazon Cognito User Pools](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-identity-pools.html)
+- [API Gateway HTTP API JWT authorizers](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-jwt-authorizer.html)
+- [Amazon DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Introduction.html)
+
+---
+
+*Documento gerado para suportar apresentação técnica e onboarding. Ajustar outputs e URLs de exemplo aos valores reais do teu ambiente após cada deploy.*
